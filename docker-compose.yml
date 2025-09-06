@@ -1,0 +1,16 @@
+
+services:
+  rtc-service:
+    build: .
+    ports:
+      - "4007:4007"
+    depends_on:
+      - redis
+    env_file: .env
+
+  redis:
+    image: redis
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"

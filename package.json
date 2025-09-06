@@ -1,0 +1,27 @@
+{
+  "name": "rtc-service",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node src/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "ioredis": "^5.7.0",
+    "jsonwebtoken": "^9.0.2",
+    "redis": "^5.1.0",
+    "socket.io": "^4.8.1",
+    "uuid": "^11.1.0",
+    "webrtc": "^1.14.1",
+    "@socket.io/redis-adapter": "^7.0.0"
+  }
+}
