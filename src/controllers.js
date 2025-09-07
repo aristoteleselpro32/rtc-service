@@ -1,4 +1,3 @@
-
 const { v4: uuidv4 } = require('uuid');
 const { supabase } = require('./db');
 
@@ -36,7 +35,6 @@ async function guardarLlamadaEnDB(callObj, extra = {}) {
       ended_at,
     } = callObj;
 
-    // Obtener la fila existente para preservar valores previos
     const { data: existingData, error: fetchError } = await supabase
       .from('llamadas')
       .select('duracion_minutos, duracion_segundos, duracion_formato, motivo, precio')
