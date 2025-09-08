@@ -29,13 +29,26 @@ async function setupRedisAdapter() {
     return;
   }
   try {
-    const pubClient = createClient({ url: process.env.REDIS_URL });
+    const pubClient = createClient({
+      url: process.env.REDIS_URL,
+      socket: {
+        tls: true,
+        rejectUnauthorized: false,
+        connectTimeout: 10000
+      }
+    });
+
     const subClient = pubClient.duplicate();
+
+    pubClient.on('error', (err) => console.error('❌ Pub Client Error:', err.message));
+    subClient.on('error', (err) => console.error('❌ Sub Client Error:', err.message));
+
     await Promise.all([pubClient.connect(), subClient.connect()]);
     io.adapter(createAdapter(pubClient, subClient));
-    console.log('✅ Socket.IO Redis adapter configured');
+    console.log('✅ Socket.IO Redis adapter configured with Redis Cloud');
   } catch (err) {
-    console.error('❌ Error configuring Socket.IO Redis adapter', err);
+    console.error('❌ Error configuring Socket.IO Redis adapter:', err.message);
+    console.log('⚠️ Using in-memory adapter instead');
   }
 }
 

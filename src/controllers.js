@@ -112,6 +112,11 @@ async function guardarLlamadaEnDB(callObj, extra = {}) {
 // Setup socket handlers
 function setupSocketHandlers(io, redis) {
   const socketToUser = new Map();
+  
+  // Verificar que Redis esté conectado
+  if (redis.status !== 'ready') {
+    console.warn('⚠️ Redis no está listo, algunas funciones pueden no trabajar');
+  }
 
   io.on('connection', (socket) => {
     socketLog('conectado', socket.id);
