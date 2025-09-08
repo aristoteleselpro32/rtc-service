@@ -22,33 +22,33 @@ const io = new Server(server, {
   // you can tweak pingInterval/pingTimeout here if needed
 });
 
-// Setup Redis adapter for Socket.IO (enables horizontal scaling)
+// index.js
 async function setupRedisAdapter() {
   if (!process.env.REDIS_URL) {
     console.warn('⚠️ REDIS_URL not set — Socket.IO Redis adapter disabled. Using in-memory adapter.');
     return;
   }
   try {
+    const { createClient } = require('redis');
+    
     const pubClient = createClient({
       url: process.env.REDIS_URL,
       socket: {
         tls: true,
         rejectUnauthorized: false,
-        connectTimeout: 10000
-      }
+      },
     });
 
     const subClient = pubClient.duplicate();
-
-    pubClient.on('error', (err) => console.error('❌ Pub Client Error:', err.message));
-    subClient.on('error', (err) => console.error('❌ Sub Client Error:', err.message));
-
+    
     await Promise.all([pubClient.connect(), subClient.connect()]);
+    
+    const { createAdapter } = require('@socket.io/redis-adapter');
     io.adapter(createAdapter(pubClient, subClient));
-    console.log('✅ Socket.IO Redis adapter configured with Redis Cloud');
+    
+    console.log('✅ Socket.IO Redis adapter configured');
   } catch (err) {
-    console.error('❌ Error configuring Socket.IO Redis adapter:', err.message);
-    console.log('⚠️ Using in-memory adapter instead');
+    console.error('❌ Error configuring Socket.IO Redis adapter', err);
   }
 }
 
