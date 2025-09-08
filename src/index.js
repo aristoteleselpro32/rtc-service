@@ -20,13 +20,11 @@ const io = new Server(server, {
 });
 
 // Setup Redis adapter con ioredis - CONFIGURACIÓN ESPECÍFICA PARA REDIS CLOUD
+// En tu index.js, modifica la función setupRedisAdapter():
 async function setupRedisAdapter() {
-  if (!process.env.REDIS_URL) {
-    console.warn('⚠️ REDIS_URL not set — Socket.IO Redis adapter disabled. Using in-memory adapter.');
-    return;
-  }
   try {
-    // Configuración explícita para Redis Cloud (mejor que usar REDIS_URL)
+    console.log('🔧 Configurando Redis adapter...');
+    
     const redisConfig = {
       host: 'redis-11222.c323.us-east-1-2.ec2.redns.redis-cloud.com',
       port: 11222,
@@ -34,20 +32,19 @@ async function setupRedisAdapter() {
       password: 'L7BkBpcldBCIInrixyd4DQotyvLxLGgQ',
       tls: {
         rejectUnauthorized: false,
-        servername: 'redis-11222.c323.us-east-1-2.ec2.redns.redis-cloud.com' // ¡IMPORTANTE!
+        ciphers: 'DEFAULT:@SECLEVEL=1',
+        minVersion: 'TLSv1.2',
+        maxVersion: 'TLSv1.3'
       },
-      retryStrategy: (times) => {
-        const delay = Math.min(times * 100, 3000);
-        return delay;
-      },
-      maxRetriesPerRequest: 3,
-      enableReadyCheck: false
+      connectTimeout: 8000,
+      maxRetriesPerRequest: 1,
+      enableReadyCheck: true
     };
 
     const pubClient = new Redis(redisConfig);
     const subClient = new Redis(redisConfig);
 
-    // Manejar errores explícitamente
+    // Manejo robusto de errores
     pubClient.on('error', (err) => {
       console.error('❌ Pub Client Error:', err.message);
     });
@@ -57,23 +54,47 @@ async function setupRedisAdapter() {
     });
 
     pubClient.on('connect', () => {
-      console.log('✅ Pub Client conectado a Redis Cloud');
+      console.log('✅ Pub Client conectado');
     });
 
     subClient.on('connect', () => {
-      console.log('✅ Sub Client conectado a Redis Cloud');
+      console.log('✅ Sub Client conectado');
     });
+
+    // Esperar conexión con timeout
+    const connectWithTimeout = (client, name) => {
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error(`Timeout conectando ${name}`));
+        }, 5000);
+
+        client.once('ready', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+
+        client.once('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+      });
+    };
+
+    await Promise.all([
+      connectWithTimeout(pubClient, 'pub'),
+      connectWithTimeout(subClient, 'sub')
+    ]);
     
     const { createAdapter } = require('@socket.io/redis-adapter');
     io.adapter(createAdapter(pubClient, subClient));
     
-    console.log('✅ Socket.IO Redis adapter configured for Redis Cloud');
+    console.log('✅ Socket.IO Redis adapter configurado');
+    
   } catch (err) {
-    console.error('❌ Error configuring Socket.IO Redis adapter:', err.message);
-    console.log('⚠️ Using in-memory adapter for Socket.IO');
+    console.error('❌ Error configurando Redis adapter:', err.message);
+    console.log('⚠️ Usando adapter en memoria para Socket.IO');
   }
 }
-
 // Health check simple
 app.get('/health', (req, res) => {
   res.json({ 
