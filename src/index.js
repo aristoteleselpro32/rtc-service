@@ -3,10 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
-const { createClient } = require('redis');
-const { createAdapter } = require('@socket.io/redis-adapter');
+const Redis = require('ioredis'); // Cambiado a ioredis
 
-const ioredis = require('./config'); // existing ioredis client (used by controllers for KV)
+const ioredis = require('./config');
 const { setupSocketHandlers } = require('./controllers');
 
 const app = express();
@@ -16,32 +15,28 @@ app.use(express.json());
 const PORT = process.env.PORT || 4007;
 const server = http.createServer(app);
 
-// Create a Socket.IO server
 const io = new Server(server, {
   cors: { origin: '*' },
-  // you can tweak pingInterval/pingTimeout here if needed
 });
 
-// index.js
+// Setup Redis adapter con ioredis
 async function setupRedisAdapter() {
   if (!process.env.REDIS_URL) {
     console.warn('⚠️ REDIS_URL not set — Socket.IO Redis adapter disabled. Using in-memory adapter.');
     return;
   }
   try {
-    const { createClient } = require('redis');
-    
-    const pubClient = createClient({
-      url: process.env.REDIS_URL,
-      socket: {
-        tls: true,
+    const pubClient = new Redis(process.env.REDIS_URL, {
+      tls: {
         rejectUnauthorized: false,
       },
     });
 
-    const subClient = pubClient.duplicate();
-    
-    await Promise.all([pubClient.connect(), subClient.connect()]);
+    const subClient = new Redis(process.env.REDIS_URL, {
+      tls: {
+        rejectUnauthorized: false,
+      },
+    });
     
     const { createAdapter } = require('@socket.io/redis-adapter');
     io.adapter(createAdapter(pubClient, subClient));
@@ -52,13 +47,13 @@ async function setupRedisAdapter() {
   }
 }
 
-// Initialize adapter and handlers
+// Initialize
 (async () => {
   await setupRedisAdapter();
   setupSocketHandlers(io, ioredis);
 })();
 
-// Mount HTTP API routes (controllers expect io and redis via middleware inside routes)
+// Routes
 const rtcRoutes = require('./routes');
 app.use('/api/rtc', rtcRoutes(io, ioredis));
 
