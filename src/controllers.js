@@ -1,8 +1,16 @@
 const { v4: uuidv4 } = require('uuid');
 const { supabase } = require('./db');
 
-function ms() {
-  return new Date().toISOString();
+// Función para hora local (ISO sin UTC)
+function localMs() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const seconds = String(now.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
 }
 
 function socketLog(...args) {
@@ -21,7 +29,7 @@ function makeCallerCallKey(userId) {
   return `call:caller:${userId}`;
 }
 
-// Helper para guardar en DB usando Supabase
+// Helper para guardar en DB usando Supabase (mejorado para defaults)
 async function guardarLlamadaEnDB(callObj, extra = {}) {
   try {
     const {
@@ -34,63 +42,68 @@ async function guardarLlamadaEnDB(callObj, extra = {}) {
       accepted_at,
       ended_at,
     } = callObj;
-
+    
+    // Buscar existente para actualizar
     const { data: existingData, error: fetchError } = await supabase
       .from('llamadas')
-      .select('duracion_minutos, duracion_segundos, duracion_formato, motivo, precio')
+      .select('duracion_minutos, duracion_segundos, duracion_formato, motivo, precio, cliente_nombre, cliente_telefono')
       .eq('id', id)
       .single();
-
+    
     if (fetchError && fetchError.code !== 'PGRST116') {
       console.error('Error al obtener llamada existente:', fetchError);
       return { error: fetchError };
     }
-
+    
+    // Defaults para nombre y teléfono si no existen
+    const clienteNombreFinal = extra.cliente_nombre || existingData?.cliente_nombre || null;
+    const clienteTelefonoFinal = extra.cliente_telefono || existingData?.cliente_telefono || null;
+    
     let duracionMin = existingData?.duracion_minutos || null;
     let duracionSeg = existingData?.duracion_segundos || null;
     let duracionFormato = existingData?.duracion_formato || null;
     let motivoFinal = extra.motivo || existingData?.motivo || motivo || "emergencia";
-    let precioFinal = extra.precio || existingData?.precio || null;
-
+    let precioFinal = extra.precio || existingData?.precio || 50; // Default 50 si no hay precio
+    
+    // Calcular duración si ended_at y accepted_at existen
     if (ended_at && accepted_at) {
       const diffMs = new Date(ended_at) - new Date(accepted_at);
-      duracionMin = Math.floor(diffMs / 60000);
       duracionSeg = Math.floor(diffMs / 1000);
-      const minutos = Math.floor(duracionSeg / 60);
+      duracionMin = Math.floor(duracionSeg / 60);
+      const minutos = duracionMin;
       const segundos = duracionSeg % 60;
       duracionFormato = `${minutos}:${segundos.toString().padStart(2, '0')}`;
     }
-
+    
     const updateData = {
       id,
       caller_id: callerId || null,
       vet_id: vetId,
       estado,
       motivo: motivoFinal,
-      created_at,
+      created_at: created_at || localMs(), // Asegurar local
       accepted_at: accepted_at || null,
       ended_at: ended_at || null,
       duracion_minutos: duracionMin,
       duracion_segundos: duracionSeg,
       duracion_formato: duracionFormato,
-      precio: precioFinal,
+      precio: precioFinal, // Siempre con default
       grabacion_url: extra.grabacion_url || null,
-      cliente_nombre: extra.cliente_nombre || null,
-      cliente_telefono: extra.cliente_telefono || null,
+      cliente_nombre: clienteNombreFinal,
+      cliente_telefono: clienteTelefonoFinal,
       cliente_localizacion: extra.cliente_localizacion || null,
     };
-
+    
     socketLog('Guardando en DB:', updateData);
-
     const { data, error } = await supabase
       .from('llamadas')
       .upsert([updateData], { onConflict: 'id' });
-
+    
     if (error) {
       console.error('Error guardando llamada en Supabase:', error);
       return { error };
     }
-
+    
     socketLog('Llamada guardada en DB:', {
       id,
       estado,
@@ -99,9 +112,10 @@ async function guardarLlamadaEnDB(callObj, extra = {}) {
       duracion_formato: duracionFormato,
       motivo: motivoFinal,
       precio: precioFinal,
-      cliente_nombre: extra.cliente_nombre,
-      cliente_telefono: extra.cliente_telefono,
+      cliente_nombre: clienteNombreFinal,
+      cliente_telefono: clienteTelefonoFinal,
     });
+    
     return { data };
   } catch (err) {
     console.error('Error guardando llamada en DB:', err);
@@ -109,13 +123,12 @@ async function guardarLlamadaEnDB(callObj, extra = {}) {
   }
 }
 
-// Setup socket handlers
+// Setup socket handlers (cambios: usar localMs() y agregar precio en desconexiones)
 function setupSocketHandlers(io, redis) {
   const socketToUser = new Map();
-
   io.on('connection', (socket) => {
     socketLog('conectado', socket.id);
-
+    
     socket.on('register', async ({ userId, role }) => {
       try {
         if (!userId) return;
@@ -127,7 +140,7 @@ function setupSocketHandlers(io, redis) {
         console.error('Error register:', err);
       }
     });
-
+    
     socket.on('iniciar_llamada', async ({ usuarioId, veterinarioId, motivo, extra }) => {
       try {
         if (!usuarioId || !veterinarioId) {
@@ -140,10 +153,8 @@ function setupSocketHandlers(io, redis) {
           socket.emit('llamada_ocupado', { message: 'Veterinario ocupado' });
           return;
         }
-
         await redis.set(makeUserSocketKey(usuarioId), socket.id);
         socketToUser.set(socket.id, usuarioId);
-
         const callObj = {
           id: uuidv4(),
           callerId: usuarioId,
@@ -151,15 +162,13 @@ function setupSocketHandlers(io, redis) {
           vetId: veterinarioId,
           estado: 'ringing',
           motivo: motivo || "emergencia",
-          created_at: ms(),
+          created_at: localMs(), // Local time
           extra: extra || {},
         };
         await redis.set(callKey, JSON.stringify(callObj), 'EX', 60 * 30);
         const callerCallKey = makeCallerCallKey(usuarioId);
         await redis.set(callerCallKey, veterinarioId, 'EX', 60 * 30);
-
         await guardarLlamadaEnDB(callObj, callObj.extra);
-
         const vetSocketId = await redis.get(makeUserSocketKey(veterinarioId));
         if (vetSocketId) {
           io.to(vetSocketId).emit('incoming_call', {
@@ -181,7 +190,7 @@ function setupSocketHandlers(io, redis) {
         socket.emit('llamada_error', { message: 'Error interno' });
       }
     });
-
+    
     socket.on('aceptar_llamada', async ({ veterinarioId, usuarioId }) => {
       try {
         const callKey = makeCallKey(veterinarioId);
@@ -196,11 +205,9 @@ function setupSocketHandlers(io, redis) {
           return;
         }
         callObj.estado = 'accepted';
-        callObj.accepted_at = ms();
+        callObj.accepted_at = localMs(); // Local time
         await redis.set(callKey, JSON.stringify(callObj), 'EX', 60 * 120);
-
         await guardarLlamadaEnDB(callObj, callObj.extra || {});
-
         const callerSocket = callObj.callerSocketId || (await redis.get(makeUserSocketKey(usuarioId)));
         if (callerSocket) io.to(callerSocket).emit('call_accepted', { veterinarianId: veterinarioId, call: callObj });
         socket.emit('accepted_ack', { ok: true, call: callObj });
@@ -209,7 +216,7 @@ function setupSocketHandlers(io, redis) {
         socket.emit('aceptar_error', { message: 'Error interno' });
       }
     });
-
+    
     socket.on('rechazar_llamada', async ({ veterinarioId, usuarioId, motivo }) => {
       try {
         const callKey = makeCallKey(veterinarioId);
@@ -219,16 +226,13 @@ function setupSocketHandlers(io, redis) {
           return;
         }
         const callObj = JSON.parse(data);
-
         callObj.estado = 'rejected';
-        callObj.ended_at = ms();
-        await guardarLlamadaEnDB(callObj, { ...callObj.extra, motivo });
-
+        callObj.ended_at = localMs(); // Local time
+        await guardarLlamadaEnDB(callObj, { ...callObj.extra, motivo, precio: 0 }); // Precio 0 para rechazadas
         const callerSocket = callObj.callerSocketId || (await redis.get(makeUserSocketKey(usuarioId)));
         if (callerSocket) {
           io.to(callerSocket).emit('llamada_rechazada', { veterinarianId: veterinarioId, reason: motivo || 'Veterinario no disponible' });
         }
-
         await redis.del(callKey);
         const callerCallKey = makeCallerCallKey(usuarioId);
         await redis.del(callerCallKey);
@@ -238,7 +242,7 @@ function setupSocketHandlers(io, redis) {
         socket.emit('rechazar_error', { message: 'Error interno' });
       }
     });
-
+    
     socket.on('finalizar_llamada', async ({ usuarioId, veterinarioId, extra }) => {
       try {
         const callKey = makeCallKey(veterinarioId);
@@ -246,26 +250,21 @@ function setupSocketHandlers(io, redis) {
         if (data) {
           const callObj = JSON.parse(data);
           callObj.estado = 'ended';
-          callObj.ended_at = ms();
-
-          const combinedExtra = { 
-            ...callObj.extra, 
+          callObj.ended_at = localMs(); // Local time
+          const combinedExtra = {
+            ...callObj.extra,
             ...extra,
             motivo: extra?.motivo || callObj.motivo || "emergencia",
-            precio: extra?.precio || null,
+            precio: extra?.precio || 50, // Default 50
           };
-
           await guardarLlamadaEnDB(callObj, combinedExtra);
-
           const callerSocket = callObj.callerSocketId || (await redis.get(makeUserSocketKey(callObj.callerId)));
           const vetSocket = await redis.get(makeUserSocketKey(veterinarioId));
           if (callerSocket) io.to(callerSocket).emit('call_ended', { by: usuarioId || 'system' });
           if (vetSocket) io.to(vetSocket).emit('call_ended', { by: usuarioId || 'system' });
-
           await redis.del(callKey);
           const callerCallKey = makeCallerCallKey(callObj.callerId);
           await redis.del(callerCallKey);
-
           socketLog(`Llamada finalizada: vet=${veterinarioId}, caller=${callObj.callerId}`);
         }
         socket.emit('finalizar_ack', { ok: true });
@@ -274,7 +273,9 @@ function setupSocketHandlers(io, redis) {
         socket.emit('finalizar_error', { message: 'Error interno' });
       }
     });
-
+    
+    // ... (resto de handlers WebRTC sin cambios: webrtc_offer, webrtc_answer, webrtc_ice_candidate)
+    
     socket.on('webrtc_offer', async ({ from: fromId, to: toId, sdp }) => {
       try {
         const targetSocket = await redis.get(makeUserSocketKey(toId));
@@ -287,7 +288,7 @@ function setupSocketHandlers(io, redis) {
         console.error('webrtc_offer err', err);
       }
     });
-
+    
     socket.on('webrtc_answer', async ({ from: fromId, to: toId, sdp }) => {
       try {
         const targetSocket = await redis.get(makeUserSocketKey(toId));
@@ -300,7 +301,7 @@ function setupSocketHandlers(io, redis) {
         console.error('webrtc_answer err', err);
       }
     });
-
+    
     socket.on('webrtc_ice_candidate', async ({ from: fromId, to: toId, candidate }) => {
       try {
         const targetSocket = await redis.get(makeUserSocketKey(toId));
@@ -311,7 +312,7 @@ function setupSocketHandlers(io, redis) {
         console.error('webrtc_ice_candidate err', err);
       }
     });
-
+    
     socket.on('disconnect', async () => {
       const userId = socketToUser.get(socket.id);
       socketLog('disconnect', socket.id, 'userId=', userId);
@@ -319,7 +320,8 @@ function setupSocketHandlers(io, redis) {
         if (userId) {
           await redis.del(makeUserSocketKey(userId));
           socketToUser.delete(socket.id);
-
+          
+          // Manejo para caller disconnect
           const callerCallKey = makeCallerCallKey(userId);
           const vetId = await redis.get(callerCallKey);
           if (vetId) {
@@ -331,14 +333,19 @@ function setupSocketHandlers(io, redis) {
                 const vetSocket = await redis.get(makeUserSocketKey(vetId));
                 if (vetSocket) io.to(vetSocket).emit('call_ended', { by: userId, reason: 'caller disconnected' });
                 callObj.estado = 'ended';
-                callObj.ended_at = ms();
-                await guardarLlamadaEnDB(callObj, { ...callObj.extra, motivo: 'caller disconnected' });
+                callObj.ended_at = localMs(); // Local time
+                await guardarLlamadaEnDB(callObj, { 
+                  ...callObj.extra, 
+                  motivo: 'caller disconnected',
+                  precio: callObj.extra?.precio || 50 // Default precio
+                });
                 await redis.del(callKey);
               }
             }
             await redis.del(callerCallKey);
           }
-
+          
+          // Manejo para vet disconnect
           const vetCallKey = makeCallKey(userId);
           const vetVal = await redis.get(vetCallKey);
           if (vetVal) {
@@ -346,8 +353,12 @@ function setupSocketHandlers(io, redis) {
             const callerSocket = await redis.get(makeUserSocketKey(callObj.callerId));
             if (callerSocket) io.to(callerSocket).emit('call_ended', { by: userId, reason: 'vet disconnected' });
             callObj.estado = 'ended';
-            callObj.ended_at = ms();
-            await guardarLlamadaEnDB(callObj, { ...callObj.extra, motivo: 'vet disconnected' });
+            callObj.ended_at = localMs(); // Local time
+            await guardarLlamadaEnDB(callObj, { 
+              ...callObj.extra, 
+              motivo: 'vet disconnected',
+              precio: callObj.extra?.precio || 50 // Default precio
+            });
             await redis.del(vetCallKey);
             const callerCallKey = makeCallerCallKey(callObj.callerId);
             await redis.del(callerCallKey);
@@ -360,7 +371,7 @@ function setupSocketHandlers(io, redis) {
   });
 }
 
-// REST handlers
+// REST handlers (usar localMs())
 async function iniciarLlamadaREST(req, res) {
   try {
     const { usuarioId, veterinarioId, motivo, extra } = req.body;
@@ -370,7 +381,6 @@ async function iniciarLlamadaREST(req, res) {
     if (existing) return res.status(409).json({ error: 'Veterinario ocupado' });
     const callerSocket = await req.redis.get(makeUserSocketKey(usuarioId));
     if (!callerSocket) return res.status(404).json({ error: 'Usuario no conectado' });
-
     const callObj = {
       id: uuidv4(),
       callerId: usuarioId,
@@ -378,15 +388,13 @@ async function iniciarLlamadaREST(req, res) {
       vetId: veterinarioId,
       estado: 'ringing',
       motivo: motivo || "emergencia",
-      created_at: ms(),
+      created_at: localMs(), // Local time
       extra: extra || {},
     };
     await req.redis.set(callKey, JSON.stringify(callObj), 'EX', 60 * 30);
     const callerCallKey = makeCallerCallKey(usuarioId);
     await req.redis.set(callerCallKey, veterinarioId, 'EX', 60 * 30);
-
     await guardarLlamadaEnDB(callObj, callObj.extra);
-
     const vetSocket = await req.redis.get(makeUserSocketKey(veterinarioId));
     if (vetSocket) {
       req.io.to(vetSocket).emit('incoming_call', {
@@ -409,7 +417,6 @@ async function finalizarLlamadaREST(req, res) {
   try {
     const { id, usuarioId, veterinarioId, precio, grabacion_url, cliente_nombre, cliente_telefono, cliente_localizacion, motivo } = req.body;
     if (!id && !veterinarioId) return res.status(400).json({ error: 'id o veterinarioId requerido' });
-
     const callKey = makeCallKey(veterinarioId);
     const data = await req.redis.get(callKey);
     let callObj = {
@@ -417,25 +424,28 @@ async function finalizarLlamadaREST(req, res) {
       callerId: usuarioId || null,
       vetId: veterinarioId || null,
       estado: 'ended',
-      ended_at: ms(),
+      ended_at: localMs(), // Local time
       motivo: motivo || "emergencia",
     };
-    let combinedExtra = { precio, grabacion_url, cliente_nombre, cliente_telefono, cliente_localizacion, motivo };
-
+    let combinedExtra = { 
+      precio: precio || 50, // Default
+      grabacion_url, 
+      cliente_nombre, 
+      cliente_telefono, 
+      cliente_localizacion, 
+      motivo 
+    };
     if (data) {
       const storedCallObj = JSON.parse(data);
-      callObj = { ...storedCallObj, estado: 'ended', ended_at: ms(), motivo: motivo || storedCallObj.motivo || "emergencia" };
-      combinedExtra = { ...storedCallObj.extra, precio, grabacion_url, cliente_nombre, cliente_telefono, cliente_localizacion, motivo };
+      callObj = { ...storedCallObj, estado: 'ended', ended_at: localMs(), motivo: motivo || storedCallObj.motivo || "emergencia" };
+      combinedExtra = { ...storedCallObj.extra, ...combinedExtra };
     }
-
     await guardarLlamadaEnDB(callObj, combinedExtra);
-
     if (veterinarioId) {
       await req.redis.del(callKey);
       const callerCallKey = makeCallerCallKey(usuarioId);
       await req.redis.del(callerCallKey);
     }
-
     return res.json({ message: 'Llamada finalizada y guardada' });
   } catch (err) {
     console.error('finalizarLlamadaREST err', err);
