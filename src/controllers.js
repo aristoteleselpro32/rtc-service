@@ -1,9 +1,11 @@
 const { v4: uuidv4 } = require('uuid');
 const { supabase } = require('./db');
 
-// Función para hora local (ISO sin UTC)
+// Función para hora local ajustada (restar 4 horas para GMT-4)
 function localMs() {
   const now = new Date();
+  // Restar 4 horas (4 * 60 * 60 * 1000 milisegundos)
+  now.setHours(now.getHours() - 4);
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
@@ -123,7 +125,7 @@ async function guardarLlamadaEnDB(callObj, extra = {}) {
   }
 }
 
-// Setup socket handlers (cambios: usar localMs() y agregar precio en desconexiones)
+// Setup socket handlers (sin cambios, usa localMs() ajustada)
 function setupSocketHandlers(io, redis) {
   const socketToUser = new Map();
   io.on('connection', (socket) => {
@@ -162,7 +164,7 @@ function setupSocketHandlers(io, redis) {
           vetId: veterinarioId,
           estado: 'ringing',
           motivo: motivo || "emergencia",
-          created_at: localMs(), // Local time
+          created_at: localMs(), // Local time ajustada
           extra: extra || {},
         };
         await redis.set(callKey, JSON.stringify(callObj), 'EX', 60 * 30);
@@ -205,7 +207,7 @@ function setupSocketHandlers(io, redis) {
           return;
         }
         callObj.estado = 'accepted';
-        callObj.accepted_at = localMs(); // Local time
+        callObj.accepted_at = localMs(); // Local time ajustada
         await redis.set(callKey, JSON.stringify(callObj), 'EX', 60 * 120);
         await guardarLlamadaEnDB(callObj, callObj.extra || {});
         const callerSocket = callObj.callerSocketId || (await redis.get(makeUserSocketKey(usuarioId)));
@@ -227,7 +229,7 @@ function setupSocketHandlers(io, redis) {
         }
         const callObj = JSON.parse(data);
         callObj.estado = 'rejected';
-        callObj.ended_at = localMs(); // Local time
+        callObj.ended_at = localMs(); // Local time ajustada
         await guardarLlamadaEnDB(callObj, { ...callObj.extra, motivo, precio: 0 }); // Precio 0 para rechazadas
         const callerSocket = callObj.callerSocketId || (await redis.get(makeUserSocketKey(usuarioId)));
         if (callerSocket) {
@@ -250,7 +252,7 @@ function setupSocketHandlers(io, redis) {
         if (data) {
           const callObj = JSON.parse(data);
           callObj.estado = 'ended';
-          callObj.ended_at = localMs(); // Local time
+          callObj.ended_at = localMs(); // Local time ajustada
           const combinedExtra = {
             ...callObj.extra,
             ...extra,
@@ -273,8 +275,6 @@ function setupSocketHandlers(io, redis) {
         socket.emit('finalizar_error', { message: 'Error interno' });
       }
     });
-    
-    // ... (resto de handlers WebRTC sin cambios: webrtc_offer, webrtc_answer, webrtc_ice_candidate)
     
     socket.on('webrtc_offer', async ({ from: fromId, to: toId, sdp }) => {
       try {
@@ -333,7 +333,7 @@ function setupSocketHandlers(io, redis) {
                 const vetSocket = await redis.get(makeUserSocketKey(vetId));
                 if (vetSocket) io.to(vetSocket).emit('call_ended', { by: userId, reason: 'caller disconnected' });
                 callObj.estado = 'ended';
-                callObj.ended_at = localMs(); // Local time
+                callObj.ended_at = localMs(); // Local time ajustada
                 await guardarLlamadaEnDB(callObj, { 
                   ...callObj.extra, 
                   motivo: 'caller disconnected',
@@ -353,7 +353,7 @@ function setupSocketHandlers(io, redis) {
             const callerSocket = await redis.get(makeUserSocketKey(callObj.callerId));
             if (callerSocket) io.to(callerSocket).emit('call_ended', { by: userId, reason: 'vet disconnected' });
             callObj.estado = 'ended';
-            callObj.ended_at = localMs(); // Local time
+            callObj.ended_at = localMs(); // Local time ajustada
             await guardarLlamadaEnDB(callObj, { 
               ...callObj.extra, 
               motivo: 'vet disconnected',
@@ -371,7 +371,7 @@ function setupSocketHandlers(io, redis) {
   });
 }
 
-// REST handlers (usar localMs())
+// REST handlers (usar localMs() ajustada)
 async function iniciarLlamadaREST(req, res) {
   try {
     const { usuarioId, veterinarioId, motivo, extra } = req.body;
@@ -388,7 +388,7 @@ async function iniciarLlamadaREST(req, res) {
       vetId: veterinarioId,
       estado: 'ringing',
       motivo: motivo || "emergencia",
-      created_at: localMs(), // Local time
+      created_at: localMs(), // Local time ajustada
       extra: extra || {},
     };
     await req.redis.set(callKey, JSON.stringify(callObj), 'EX', 60 * 30);
@@ -424,7 +424,7 @@ async function finalizarLlamadaREST(req, res) {
       callerId: usuarioId || null,
       vetId: veterinarioId || null,
       estado: 'ended',
-      ended_at: localMs(), // Local time
+      ended_at: localMs(), // Local time ajustada
       motivo: motivo || "emergencia",
     };
     let combinedExtra = { 
